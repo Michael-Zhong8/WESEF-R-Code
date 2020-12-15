@@ -1,0 +1,250 @@
+---
+title: "Lei Guo's RNAseq Analysis Pipeline"
+# output: html_notebook
+---
+
+
+## Setting Parameters
+```{r}
+#####################################Instruction###########################################
+# Pipeline Components: count_normalization_DE_GO_Enrich_plot.Rmd, Functions_Count_Normalization_Expressionset_DE_plot.R, MsigDB
+
+# Pipeline setup: put all the pipeline components, the count table and the meta table in the same folder
+
+# Input: Count table & Meta table (The sample IDs in the meta table must match the column names of the count table)
+
+# Output: DEG table, Functional enrichment table, Functional enrichment plot, Gene expression plots
+
+# set up the following parameters to perform the analysis
+
+#####################set parameters for counts table and meta table#######################
+
+# set working directory
+work_dir <- getwd()
+
+# set count file (needs to be a csv or tsv file)
+counts_file <- "GeneExpression_Mouse_cpd9.tsv"
+
+# set meta file
+meta_file <- "Meta_Mouse_Drug.csv"
+
+# set gene ID column (which column stores the gene ID in the count table?)
+gene_id_column <- 1
+
+# set sample ID column (which column stores the sample ID in the meta table?)
+sample_id_column <- 2
+
+# define lowly expressed genes (perc_low=0.3 means if a gene's expression value is less than 1 in more than 30% of the samples, it is defined as a lowly expressed gene.)
+perc_low <- 0.3
+
+# set RNAseq data source (Is the dataset from mouse or human?)
+org <- "mouse"
+
+# plot PCA (which traits do color and shape represent?)
+color_column <- "Treatment"
+shape_column <- TRUE # or other columns in the demographics such as sex (shape_column <- "Sex")
+sample_label <- FALSE # label each sample in the PCA plot or not (TRUE/FALSE)
+
+# remove outlier sample (check the PCA plot)
+outlier_sample <- NULL # assign NULL if no outliers
+
+#####################set parameters for DE analysis#######################
+
+# set treatment column for DE analysis (which column stores the experiment groups)
+treatment_column <- "Treatment"
+
+# set P value threshold for DE analysis
+p_value <- 0.05
+
+# set fold change threshold for DE analysis
+fc <- 1.2
+
+# set covariates for adjustment (format: cov_vec <- c("age", "sex", ...))
+cov_vec <- NULL
+
+# set the name of the file where DEGs are stored
+deg_file <- "DEG_adjP0.05_fc1.2.tsv"
+
+#####################set parameters for Functional Enrichment Analysis#######################
+# Do you want to run the Functional Enrichment Analysis (TRUE or FALSE)?
+run_func_enrich <- T
+
+# a vector of genes; usually all the genes used for the differential expression or network analysis; if NULL, the genes present in the gene ontology database file (ontologyfname) will be uased as the background
+totalbackground=NULL
+#####################set parameters for plots#######################
+# plot type ("pdf", "jpeg", "tiff", "png", "bmp", "svg" or "wmf")
+out_format <- "png"
+
+# bar or violin for gene expression plot
+plot_type <- "violin"
+
+# genes to plot (format : c("Synj1", "Lrp10", ...))
+gene_to_plot <- c("Synj1", "Lrp10") # gene_to_plot <- NULL if you don't want to plot gene expression levels
+#####################Parameter Setting Ends##################################
+```
+
+
+## Check and install packages
+```{r}
+# packages from CRAN
+invisible(sapply(c("data.table", "stringr", "tools", "ggplot2", "Hmisc", "BiocManager", "ggfortify", "ggrepel"), function(x) if(x %in% rownames(installed.packages()) == FALSE) {install.packages(x)}))
+
+# packages from Bioconductor
+invisible(sapply(c("edgeR", "limma", "Biobase", "biomaRt"), function(x) if(x %in% rownames(installed.packages()) == FALSE) {BiocManager::install(x)}))
+```
+
+
+
+## Loading packages
+```{r message=FALSE, warning=FALSE}
+# set working directory
+setwd(work_dir)
+
+source("Functions_Count_Normalization_Expressionset_DE_plot.R")
+
+# load functional enrichment functions
+source("./MsigDB/R-functions.R")
+ontologyfname <- "./MsigDB/MSigDB.Selection.v6.1.tsv"
+```
+
+
+Reading in the counts table
+```{r}
+# read expression data
+counts_tbl <- fread(counts_file, data.table = F)
+# make the gene id column row names
+rownames(counts_tbl) <- counts_tbl[[gene_id_column]]
+# remove the gene id column (we want to make the entire data frame numerical for the subsequent computation)
+counts_tbl <- counts_tbl[, -gene_id_column]
+```
+
+
+## Reading in the meta table
+```{r}
+# read in the meta data
+if(file_ext(meta_file) == "csv" | file_ext(meta_file) == "tsv" | file_ext(meta_file) == "txt"){
+    meta_data <- fread(meta_file, data.table = F)
+    rownames(meta_data) <- meta_data[[sample_id_column]]
+    }else if(file_ext(meta_file) == "xlsx"){
+        meta_data <- as.data.frame(read_xlsx(meta_file))
+        rownames(meta_data) <- meta_data[[sample_id_column]]
+    }else if(file_ext(meta_file) == "xls"){
+        meta_data <- as.data.frame(read_xls(meta_file))
+        rownames(meta_data) <- meta_data[[sample_id_column]]}
+
+```
+
+
+## Normalize the raw counts with lowly expressed genes removed
+```{r}
+count_norm_low_rm <- count_norm_dgelist(raw_counts = counts_tbl, gene_id_column = 1, meta = meta_data, perc_low = perc_low)
+```
+
+
+## Normalize the raw counts with lowly expressed genes included
+```{r}
+count_norm_low_kp <- count_norm_dgelist(raw_counts = counts_tbl, gene_id_column = 1, meta = meta_data, perc_low = NULL)
+```
+
+## Plot PCA
+```{r}
+plot_pca(count_table = count_norm_low_rm$E, meta_table = count_norm_low_rm$targets, shape_column = shape_column, color_column = color_column, out_format = "png", dpi = 300, width = 12, height =9, save_dir = work_dir, sample_label = sample_label)
+```
+
+
+## DE Analysis
+```{r}
+DEGs <- de_analysis_dgelist_full(exprlist = count_norm_low_rm, treatment_column = treatment_column, p_value = p_value, fc = fc, cov_vec = cov_vec)
+```
+
+
+## File output
+```{r}
+if(nrow(DEGs) > 0){
+    fwrite(DEGs, deg_file, sep = "\t", row.names = F)
+    }else{print("No DEGs detected!")}
+```
+
+
+## Convert mouse gene to human gene
+```{r}
+# function (mouse gene to human gene)
+convertMouseGeneList <- function(x){
+
+require("biomaRt")
+human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+
+genesV2 = getLDS(attributes = c("mgi_symbol"), filters = "mgi_symbol", values = x , mart = mouse, attributesL = c("hgnc_symbol"), martL = human, uniqueRows=T)
+
+return(genesV2)
+}
+
+# function (human gene to mouse gene)
+convertHumanGeneList <- function(x){
+
+require("biomaRt")
+human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+
+genesV2 = getLDS(attributes = c("hgnc_symbol"), filters = "hgnc_symbol", values = x , mart = human, attributesL = c("mgi_symbol"), martL = mouse, uniqueRows=T)
+
+return(genesV2)
+}
+```
+
+
+## Functional Enrichment Analysis
+```{r}
+if (run_func_enrich){
+if (file.exists(deg_file)){
+# read deg file
+degs <- fread(deg_file)
+
+degs$Contrast <- ifelse(degs$logFC > 0, paste0(degs$Contrast, "_up"), paste0(degs$Contrast, "_down"))
+
+degs <- degs[, c(2, ncol(degs)), with = F]
+
+# convert mouse DEGs to human DEGs
+if (org == "mouse"){
+    gene_mouse_to_human <- convertMouseGeneList(degs[[1]])
+    degs$human_gene <- gene_mouse_to_human[[2]][match(degs[[1]], gene_mouse_to_human[[1]])]
+    degs <- na.omit(degs)
+    degs <- degs[, c(3, 2)]
+
+    # save formatted degs
+    fwrite(degs, paste0("formatted_", deg_file), sep = "\t")
+}else if (org == "human"){
+    fwrite(degs, paste0("formatted_", deg_file), sep = "\t")
+}
+
+# which column holds gene symbols
+idxGS=1;
+minputfnames = paste0("formatted_", deg_file);
+
+# GO enrichment
+moduleBasedIntersectionMatrix_GeneOntology(fnames=minputfnames, fnameB=ontologyfname, outputDir='', uniqueIdCol=idxGS, signifLevel=0.05, removeDuplicate=TRUE, removeGrey=TRUE,totalbackground=totalbackground)
+
+# delete intermediate files
+file.remove(minputfnames)
+}else{print("No DEGs detected! GO enrichment analysis aborted!")}
+}else{print("No Functional Enrichment Analysis was performed!")}
+```
+
+
+## Plot top functions for DEGs
+```{r}
+func_enrich_file <- list.files(work_dir, "Ontology.xls$")
+
+plot_functional_enrich_multi(func_enrich_file, out_format = "png", dpi = 300, width = 25, height = 15)
+```
+
+
+## Plot gene expression levels
+```{r}
+if(is.null(gene_to_plot)){print("No genes are plotted!")
+    }else if(all(gene_to_plot %in% count_norm_low_rm$gene[[2]])){
+        invisible(lapply(gene_to_plot, plot_gene_dgelist, exprlist = count_norm_low_rm, treatment_col = treatment_column, save_dir = work_dir, out_format = out_format, dpi = 300, width = 25, height =30, plot_type = plot_type))
+}else{print("Some of the input genes are not in the dataset")}
+```
+
